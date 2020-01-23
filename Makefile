@@ -41,20 +41,27 @@ pylint:
 	@cp lib/kadalulib.py csi/
 	@cp lib/kadalulib.py server/
 	@cp lib/kadalulib.py operator/
-	-pylint --disable=W0511 -s n lib/kadalulib.py
-	-pylint --disable=W0511 -s n server/glusterfsd.py
-	-pylint --disable=W0511 -s n server/quotad.py
-	-pylint --disable=W0511 -s n server/server.py
-	-pylint --disable=W0511 -s n server/shd.py
-	-pylint --disable=W0511 -s n csi/controllerserver.py
-	-pylint --disable=W0511 -s n csi/identityserver.py
-	-pylint --disable=W0511 -s n csi/main.py
-	-pylint --disable=W0511 -s n csi/nodeserver.py
-	-pylint --disable=W0511 -s n csi/volumeutils.py
-	-pylint --disable=W0511 -s n operator/main.py
+	@cp server/kadalu_quotad/quotad.py server/
+	@pylint --disable=W0511 -s n lib/kadalulib.py
+	@pylint --disable=W0511 -s n server/glusterfsd.py
+	@pylint --disable=W0511 -s n server/quotad.py
+	@pylint --disable=W0511 -s n server/server.py
+	@pylint --disable=W0511 -s n server/shd.py
+	@pylint --disable=W0511 -s n csi/controllerserver.py
+	@pylint --disable=W0511 -s n csi/identityserver.py
+	@pylint --disable=W0511 -s n csi/main.py
+	@pylint --disable=W0511 -s n csi/nodeserver.py
+	@pylint --disable=W0511 -s n csi/volumeutils.py
+	@pylint --disable=W0511 -s n operator/main.py
+	@pylint --disable=W0511 -s n extras/scripts/gen_manifest.py
+	@pylint --disable=W0511,W0611 -s n cli/kubectl_kadalu/main.py
+	@pylint --disable=W0511 -s n cli/kubectl_kadalu/utils.py
+	@pylint --disable=W0511 -s n cli/kubectl_kadalu/storage_add.py
+	@pylint --disable=W0511 -s n cli/kubectl_kadalu/install.py
 	@rm csi/kadalulib.py
 	@rm server/kadalulib.py
 	@rm operator/kadalulib.py
+	@rm server/quotad.py
 
 ifeq ($(KADALU_VERSION), latest)
 prepare-release:

@@ -1,14 +1,13 @@
-import os
-import yaml
-import subprocess
-import tempfile
+"""
+'install' subcommand for kubectl-kadalu CLI tool
+"""
 import sys
 
-
-KUBECTL_CMD = "kubectl"
+from kubectl_kadalu import utils
 
 
 def install_args(subparsers):
+    """ add arguments to argparser """
     parser_install = subparsers.add_parser('install')
     parser_install.add_argument(
         "--version",
@@ -22,10 +21,10 @@ def install_args(subparsers):
         choices=["openshift", "kubernetes"],
         default="kubernetes"
     )
-    return
 
 
 def subcmd_install(args):
+    """ perform install subcommand """
     file_url = "https://raw.githubusercontent.com/kadalu/kadalu/master/manifests"
     version = ""
     insttype = ""
@@ -39,17 +38,14 @@ def subcmd_install(args):
     operator_file = "%s/kadalu-operator%s%s.yaml" % (file_url, insttype, version)
 
     try:
-        cmd = [KUBECTL_CMD, "apply", "-f", operator_file]
-        resp = subprocess.run(cmd, capture_output=True, check=True,
-                              universal_newlines=True)
+        cmd = [utils.KUBECTL_CMD, "apply", "-f", operator_file]
+        resp = utils.execute(cmd)
         print("Kadalu operator create request sent successfully")
         print(resp.stdout)
         print()
-    except subprocess.CalledProcessError as err:
+    except utils.CommandError as err:
         print("Error while running the following command", file=sys.stderr)
         print("$ " + " ".join(cmd), file=sys.stderr)
         print("", file=sys.stderr)
         print(err.stderr, file=sys.stderr)
         sys.exit(1)
-
-    return

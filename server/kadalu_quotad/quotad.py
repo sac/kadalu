@@ -6,8 +6,12 @@ import time
 import json
 import logging
 
-from .kadalulib import execute, logf, CommandException, \
-    get_volname_hash, get_volume_path, PV_TYPE_SUBVOL
+try:
+    from .kadalulib import execute, logf, CommandException, \
+        get_volname_hash, get_volume_path, PV_TYPE_SUBVOL
+except ImportError:
+    from kadalulib import execute, logf, CommandException, \
+        get_volname_hash, get_volume_path, PV_TYPE_SUBVOL
 
 # Config file for kadalu info
 # Config file format:
@@ -21,7 +25,8 @@ from .kadalulib import execute, logf, CommandException, \
 # We are using a json file, so the same file may get more parameters
 # for other tools
 #
-CONFIG_FILE="/var/lib/glusterd/kadalu.info"
+CONFIG_FILE = "/var/lib/glusterd/kadalu.info"
+
 
 def set_quota(rootdir, subdir_path, quota_value):
     """
@@ -128,11 +133,11 @@ def start():
         if brick_path is not None:
             crawl(brick_path)
         try:
-            with open(CONFIG_FILE) as f:
-                config_data = json.loads(f.read().strip())
+            with open(CONFIG_FILE) as conf_file:
+                config_data = json.loads(conf_file.read().strip())
                 for brick in config_data.get('bricks', None):
                     crawl(brick)
-        except:
+        except:    # noqa # pylint: disable=bare-except
             # Ignore all errors
             pass
 

@@ -7,10 +7,14 @@ addons:
   apt:
     packages:
       - realpath
+
 services:
   - docker
 
-language: go
+language: python
+python:
+  - "3.7"
+
 branches:
   only:
     - master
@@ -29,8 +33,18 @@ env:
     - CHANGE_MINIKUBE_NONE_USER=true
     - KUBECONFIG=$HOME/.kube/config
 
+install:
+  - pip install pylint jinja2
+
+before_script:
+  - pylint --version
+
 jobs:
   include:
+    - name: pylint tests
+      script:
+        - pip install requests xxhash grpcio pyxattr kubernetes
+        - make pylint || travis_terminate 1;
     - name: kadalu with kube 1.15.0
       script:
         - make build-containers || travis_terminate 1;

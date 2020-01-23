@@ -1,14 +1,17 @@
+"""
+'storage-add ' sub command
+"""
+
 import os
-import yaml
-import subprocess
 import tempfile
 import sys
+import yaml
 
-
-KUBECTL_CMD = "kubectl"
+from kubectl_kadalu import utils
 
 
 def storage_add_args(subparsers):
+    """ add arguments, and their options """
     parser_add_storage = subparsers.add_parser('storage-add')
     parser_add_storage.add_argument(
         "name",
@@ -17,8 +20,8 @@ def storage_add_args(subparsers):
     parser_add_storage.add_argument(
         "--type",
         help="Storage Type",
-        choices=["Replica1", "Replica3"],
-        default="Replica1"
+        choices=["Replica1", "Replica3", "External"],
+        default=None
     )
     parser_add_storage.add_argument(
         "--device",
@@ -40,17 +43,46 @@ def storage_add_args(subparsers):
         default=[],
         action="append"
     )
+    parser_add_storage.add_argument(
+        "--external",
+        help="Storage from external gluster, Example: --external gluster-node:/gluster-volname",
+        default=""
+    )
 
 
 def storage_add_validation(args):
-    num_storages = len(args.device) or len(args.path) or len(args.pvc)
+    """ validate arguments """
+    for vol in args.external:
+        if args.type and args.type != "External":
+            print("'--external' option is used only with '--type External'",
+                  file=sys.stderr)
+            sys.exit(1)
+
+        if ":" not in vol:
+            print("Invalid external storage details. Please specify "
+                  "details in the format <node>:/<volname>", file=sys.stderr)
+            sys.exit(1)
+        # Set type to External as '--external' option is provided
+        args.type = "External"
+
+    if not args.type:
+        args.type = "Replica1"
+
+    num_storages = len(args.device) or len(args.path) or len(args.pvc) or len(args.external)
     if num_storages == 0:
         print("Please specify atleast one storage", file=sys.stderr)
         sys.exit(1)
 
+    storage_mismatch = False
     if (args.type == "Replica1" and num_storages != 1) or (
             args.type == "Replica3" and num_storages != 3
     ):
+        storage_mismatch = True
+
+    if (args.type == "External" and num_storages != 1):
+        storage_mismatch = True
+
+    if storage_mismatch:
         print("Number of storages not matching for type=%s" % args.type,
               file=sys.stderr)
         sys.exit(1)
@@ -69,6 +101,7 @@ def storage_add_validation(args):
 
 
 def storage_add_data(args):
+    """ Build the config file """
     content = {
         "apiVersion": "kadalu-operator.storage/v1alpha1",
         "kind": "KadaluStorage",
@@ -115,25 +148,38 @@ def storage_add_data(args):
             )
         return content
 
+    # External details are specified
+    if args.external:
+        for voldata in args.external:
+            node, vol = voldata.split(":")
+            content["spec"]["storage"].append(
+                {
+                    "gluster_host": node,
+                    "gluster_volname": vol.strip("/")
+                }
+            )
+        return content
+
+    return ""
 
 def subcmd_storage_add(args):
+    """ Adds the subcommand arguments back to main CLI tool """
     data = storage_add_data(args)
 
-    fd, tempfile_path = tempfile.mkstemp(prefix="kadalu")
+    config, tempfile_path = tempfile.mkstemp(prefix="kadalu")
     try:
-        with os.fdopen(fd, 'w') as tmp:
+        with os.fdopen(config, 'w') as tmp:
             yaml.dump(data, tmp)
 
-        cmd = [KUBECTL_CMD, "create", "-f", tempfile_path]
-        resp = subprocess.run(cmd, capture_output=True, check=True,
-                              universal_newlines=True)
+        cmd = [utils.KUBECTL_CMD, "create", "-f", tempfile_path]
+        resp = utils.execute(cmd)
         print("Storage add request sent successfully")
         print(resp.stdout)
         print()
         print("Storage Yaml file for your reference:")
         print(yaml.dump(data))
         print()
-    except subprocess.CalledProcessError as err:
+    except utils.CommandError as err:
         print("Error while running the following command", file=sys.stderr)
         print("$ " + " ".join(cmd), file=sys.stderr)
         print("", file=sys.stderr)
