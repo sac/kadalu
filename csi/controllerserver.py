@@ -4,6 +4,7 @@ controller server implementation
 import os
 import logging
 import time
+import random
 
 import grpc
 
@@ -12,12 +13,12 @@ import csi_pb2_grpc
 from volumeutils import mount_and_select_hosting_volume, \
     create_virtblock_volume, create_subdir_volume, delete_volume, \
     get_pv_hosting_volumes, PV_TYPE_SUBVOL, PV_TYPE_VIRTBLOCK, \
-    HOSTVOL_MOUNTDIR, check_external_volume, unmount_volume, \
-    update_free_size
+    HOSTVOL_MOUNTDIR, check_external_volume, \
+    update_free_size, unmount_glusterfs
 from kadalulib import logf, send_analytics_tracker
 
 VOLINFO_DIR = "/var/lib/gluster"
-
+KADALU_VERSION = os.environ.get("KADALU_VERSION", "latest")
 
 class ControllerServer(csi_pb2_grpc.ControllerServicer):
     """
@@ -25,7 +26,7 @@ class ControllerServer(csi_pb2_grpc.ControllerServicer):
     volume mount and PV creation.
     Ref:https://github.com/container-storage-interface/spec/blob/master/spec.md
     """
-    # noqa # pylint: disable=too-many-locals,too-many-statements
+    # noqa # pylint: disable=too-many-locals,too-many-statements,too-many-branches
     def CreateVolume(self, request, context):
         start_time = time.time()
         logging.debug(logf(
@@ -35,13 +36,17 @@ class ControllerServer(csi_pb2_grpc.ControllerServicer):
         pvsize = request.capacity_range.required_bytes
 
         pvtype = PV_TYPE_SUBVOL
-        for vol_capability in request.volume_capabilities:
-            # using getattr to avoid Pylint error
-            single_node_writer = getattr(csi_pb2.VolumeCapability.AccessMode,
-                                         "SINGLE_NODE_WRITER")
+        # 'latest' finds a place here, because only till 0.5.0 version
+        # we had 'latest' as a separate version. After that, 'latest' is
+        # just a link to latest version.
+        if KADALU_VERSION in ["0.5.0", "0.4.0", "0.3.0"]:
+            for vol_capability in request.volume_capabilities:
+                # using getattr to avoid Pylint error
+                single_node_writer = getattr(csi_pb2.VolumeCapability.AccessMode,
+                                             "SINGLE_NODE_WRITER")
 
-            if vol_capability.access_mode.mode == single_node_writer:
-                pvtype = PV_TYPE_VIRTBLOCK
+                if vol_capability.access_mode.mode == single_node_writer:
+                    pvtype = PV_TYPE_VIRTBLOCK
 
         logging.debug(logf(
             "Found PV type",
@@ -66,22 +71,31 @@ class ControllerServer(csi_pb2_grpc.ControllerServicer):
         with open(os.path.join(VOLINFO_DIR, "uid")) as uid_file:
             uid = uid_file.read()
 
+        host_volumes = get_pv_hosting_volumes(filters)
+        logging.debug(logf(
+            "Got list of hosting Volumes",
+            volumes=",".join(v['name'] for v in host_volumes)
+        ))
         ext_volume = None
-        if filters['hostvol_type'] == 'External':
-            ext_volume = check_external_volume(request)
+        hostvoltype = filters.get("hostvol_type", None)
+        if hostvoltype == 'External':
+            ext_volume = check_external_volume(request, host_volumes)
+
             if ext_volume:
                 mntdir = os.path.join(HOSTVOL_MOUNTDIR, ext_volume['name'])
 
                 if not filters.get('kadalu-format', None):
                     # No need to keep the mount on controller
-                    unmount_volume(mntdir)
+                    unmount_glusterfs(mntdir)
+
                     logging.info(logf(
                         "Volume (External) created",
                         name=request.name,
                         size=pvsize,
-                        hostvol=ext_volume['name'],
+                        mount=mntdir,
+                        hostvol=ext_volume['g_volname'],
                         pvtype=pvtype,
-                        volpath=ext_volume['host'],
+                        volpath=ext_volume['g_host'],
                         duration_seconds=time.time() - start_time
                     ))
 
@@ -91,10 +105,11 @@ class ControllerServer(csi_pb2_grpc.ControllerServicer):
                             "volume_id": request.name,
                             "capacity_bytes": pvsize,
                             "volume_context": {
-                                "type": filters['hostvol_type'],
+                                "type": hostvoltype,
                                 "hostvol": ext_volume['name'],
                                 "pvtype": pvtype,
-                                "gserver": ext_volume['host'],
+                                "gvolname": ext_volume['g_volname'],
+                                "gserver": ext_volume['g_host'],
                                 "fstype": "xfs",
                                 "options": ext_volume['options'],
                             }
@@ -130,13 +145,14 @@ class ControllerServer(csi_pb2_grpc.ControllerServicer):
                         "volume_id": request.name,
                         "capacity_bytes": pvsize,
                         "volume_context": {
-                            "type": filters['hostvol_type'],
+                            "type": hostvoltype,
                             "hostvol": ext_volume['name'],
                             "pvtype": pvtype,
                             "path": vol.volpath,
-                            "gserver": ext_volume['host'],
+                            "gvolname": ext_volume['g_volname'],
+                            "gserver": ext_volume['g_host'],
                             "fstype": "xfs",
-                            "options": ext_volume['options'],
+                            "options": ext_volume['g_options'],
                         }
                     }
                 )
@@ -153,11 +169,8 @@ class ControllerServer(csi_pb2_grpc.ControllerServicer):
             return csi_pb2.CreateVolumeResponse()
 
 
-        host_volumes = get_pv_hosting_volumes(filters)
-        logging.debug(logf(
-            "Got list of hosting Volumes",
-            volumes=",".join(v['name'] for v in host_volumes)
-        ))
+        # Randomize the entries so we can issue PV from different storage
+        random.shuffle(host_volumes)
 
         hostvol = mount_and_select_hosting_volume(host_volumes, pvsize)
         if hostvol is None:
@@ -185,15 +198,18 @@ class ControllerServer(csi_pb2_grpc.ControllerServicer):
             duration_seconds=time.time() - start_time
         ))
 
-        update_free_size(hostvol, -pvsize)
+        update_free_size(hostvol, request.name, -pvsize)
 
-        send_analytics_tracker("pvc-%s" % filters['hostvol_type'], uid)
+        if not hostvoltype:
+            hostvoltype = "unknown"
+
+        send_analytics_tracker("pvc-%s" % hostvoltype, uid)
         return csi_pb2.CreateVolumeResponse(
             volume={
                 "volume_id": request.name,
                 "capacity_bytes": pvsize,
                 "volume_context": {
-                    "type": filters['hostvol_type'],
+                    "type": hostvoltype,
                     "hostvol": hostvol,
                     "pvtype": pvtype,
                     "path": vol.volpath,

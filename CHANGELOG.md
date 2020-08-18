@@ -6,6 +6,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2020-05-11
+### Added
+- New documentation added for Storage Classes
+- Kadalu can be used as Local storage with the introduction of new
+  Storage Class filter `node_affinity`.
+- Experimental Arm support added with separate tag `master.`
+- Python 2 support for Kadalu Kubectl extension
+- Added support for Kubernetes 1.18
+- Kadalu Server and CSI container images are upgraded to the latest
+  stable release of Gluster(7.4).
+- Fixed an issue of Server pods not starting due to long
+  names. Removed hostname identifier from the Server pod names so that
+  the Server pod name length will be well within limits. Use `kubectl
+  get pods -n kadalu -o wide` to see the hostnames.
+
+## [0.6.0] - 2020-03-01
+### Added
+- Replica 2 support added using the Thin arbiter feature of GlusterFS
+- Fixed issue showing the wrong status of server Pod as "Running"
+  instead of the actual error.
+- Fixed Gluster remount failure, when connectivity with storage pods
+  goes down, and `df` command doesn't show the Gluster mount.
+- CSI provisioner is enhanced to choose available storages randomly to
+  avoid retrying with the same storage pool if that is down. This
+  method also helps to utilize all the available storage pool for
+  PVs.
+- Fixed permissions issue when app pods try to use mounted PVs with a
+  non-root user.
+- Kadalu base container image upgraded to Fedora 31 and Gluster
+  version in server and CSI container images to 7.3.
+- Fixed issue in kubectl kadalu plugin while parsing arguments related
+  to external storage and Tiebreaker node.
+
+## [0.5.0] - 2020-01-30
+### Added
+- Documentation updated for the new features introduced in
+  0.4.0(Kubectl plugin, External storage, and Storage configurations)
+- Cleanup script enhanced to handle CSIDriver object, which was
+  introduced in the latest version of Kubernetes.
+- Troubleshooting documentation is added.
+- Introduced Thread lock while updating the info file and while
+  mounting the Storage pool to avoid race conditions when PV claim and
+  pod create done in parallel.
+- All Pylint tests are now passing.
+- Upgraded Kadalu Server container images to Gluster latest
+  release(7.x)
+- Fixed Python compatibility issue in Kadalu Kubectl plugin.
+- Introduced "install" subcommand in kubectl-kadalu
+- Added support for external gluster storage in kubectl-kadalu
+
 ## [0.4.0] - 2019-12-31
 ### Added
 - Enhancement to support Kadalu storage on top of existing PVC
@@ -53,8 +103,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Logging and Analytics support added.
 - End-to-end testing using Minikube and Travis-ci.
 
-[Unreleased]: https://github.com/kadalu/kadalu/compare/0.4.0...HEAD
+[Unreleased]: https://github.com/kadalu/kadalu/compare/0.7.0...HEAD
 [0.1.0]: https://github.com/kadalu/kadalu/compare/e434f25...0.1.0
 [0.2.0]: https://github.com/kadalu/kadalu/compare/0.1.0...0.2.0
 [0.3.0]: https://github.com/kadalu/kadalu/compare/0.2.0...0.3.0
 [0.4.0]: https://github.com/kadalu/kadalu/compare/0.3.0...0.4.0
+[0.5.0]: https://github.com/kadalu/kadalu/compare/0.4.0...0.5.0
+[0.6.0]: https://github.com/kadalu/kadalu/compare/0.5.0...0.6.0
+[0.7.0]: https://github.com/kadalu/kadalu/compare/0.6.0...0.7.0

@@ -1,16 +1,17 @@
-FROM docker.io/fedora:30
+FROM docker.io/fedora:31
 
 RUN yum update -y
-RUN yum -y install procps-ng xfsprogs net-tools telnet wget
+RUN yum -y install procps-ng xfsprogs net-tools telnet wget e2fsprogs python3-pip sqlite
+
+# need below dependencies to have xxhash
+RUN yum -y install gcc python3-devel
+
 RUN yum clean all -y
 RUN rm -rf /var/cache/yum
 
-RUN wget -P /etc/yum.repos.d \
-    https://download.gluster.org/pub/gluster/glusterfs/LATEST/Fedora/glusterfs-fedora.repo
-
 # Install Python GRPC library and copy all CSI related files
-RUN python3 -m pip install jinja2 xxhash requests datetime \
-     prometheus_client
+RUN python3 -m pip install jinja2 requests datetime xxhash
+
 RUN mkdir -p /kadalu/
 
 ARG version="(unknown)"
@@ -23,7 +24,7 @@ LABEL name="kadalu-base"
 LABEL Summary="KaDalu Base Image"
 LABEL vcs-type="git"
 LABEL vcs-url="https://github.com/kadalu/kadalu"
-LABEL vendor="org.kadalu.gluster"
+LABEL vendor="kadalu"
 LABEL version="${version}"
 
 # Debugging, Comment the above line and

@@ -43,12 +43,16 @@ spec:
             preStop:
               exec:
                 command: ["/kadalu/stop-server.sh", "{{ volname }}"]
-          # livenessProbe:
-          #   exec:
-          #     command:
-          #       - /usr/bin/ps -ef | grep glusterfsd
-          #   initialDelaySeconds: 120
-          #   periodSeconds: 30
+          readinessProbe:
+            tcpSocket:
+              port: 24007
+            initialDelaySeconds: 7
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 24007
+            initialDelaySeconds: 120
+            periodSeconds: 20
           env:
 {%- if kube_hostname != "" %}
             - name: HOSTNAME
@@ -56,6 +60,8 @@ spec:
 {%- endif %}
             - name: VOLUME
               value: {{ volname }}
+            - name: VOLUME_TYPE
+              value: {{ voltype }}
             - name: BRICK_PATH
               value: {{ brick_path }}
             - name: NODEID
@@ -68,6 +74,8 @@ spec:
               value: "{{ brick_device }}"
             - name: KADALU_VERSION
               value: "{{ kadalu_version }}"
+            - name: K8S_DIST
+              value: "{{ k8s_dist }}"
           securityContext:
             capabilities: {}
             privileged: true
@@ -99,6 +107,8 @@ spec:
 {%- endif %}
             - name: VOLUME
               value: {{ volname }}
+            - name: VOLUME_TYPE
+              value: {{ voltype }}
             - name: BRICK_PATH
               value: {{ brick_path }}
             - name: NODEID
@@ -115,6 +125,8 @@ spec:
               value: "{{ brick_device }}"
             - name: KADALU_VERSION
               value: "{{ kadalu_version }}"
+            - name: K8S_DIST
+              value: "{{ k8s_dist }}"
           securityContext:
             capabilities: {}
             privileged: true
@@ -132,6 +144,8 @@ spec:
 {%- endif %}
             - name: VOLUME
               value: {{ volname }}
+            - name: VOLUME_TYPE
+              value: {{ voltype }}
             - name: BRICK_PATH
               value: {{ brick_path }}
             - name: NODEID
@@ -148,6 +162,8 @@ spec:
               value: "{{ brick_device }}"
             - name: KADALU_VERSION
               value: "{{ kadalu_version }}"
+            - name: K8S_DIST
+              value: "{{ k8s_dist }}"
           securityContext:
             capabilities: {}
             privileged: true

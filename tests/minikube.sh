@@ -3,6 +3,44 @@
 #Based on ideas from https://github.com/rook/rook/blob/master/tests/scripts/minikube.sh
 fail=0
 
+ARCH=`uname -m | sed 's|aarch64|arm64|' | sed 's|x86_64|amd64|'`
+function wait_till_pods_start() {
+    # give it some time
+    cnt=0
+    local_timeout=200
+    while true; do
+	cnt=$((cnt + 1))
+	sleep 2
+	ret=$(kubectl get pods -nkadalu -o wide | grep 'Running' | wc -l)
+	if [[ $ret -ge 9 ]]; then
+	    echo "Successful after $cnt seconds"
+	    break
+	fi
+	if [[ $cnt -eq ${local_timeout} ]]; then
+	    kubectl get pods -o wide
+	    echo "giving up after ${local_timeout} seconds"
+	    fail=1
+	    break
+	fi
+	if [[ $((cnt % 15)) -eq 0 ]]; then
+	    echo "$cnt: Waiting for pods to come up..."
+	fi
+    done
+
+    kubectl get sc
+    kubectl get pods -nkadalu -o wide
+    # Return failure if fail variable is set to 1
+    if [ $fail -eq 1 ]; then
+	echo "Marking the test as 'FAIL'"
+	for p in $(kubectl -n kadalu get pods -o name); do
+	    echo "====================== Start $p ======================"
+	    kubectl -nkadalu --all-containers=true --tail 300 logs $p
+	    kubectl -nkadalu describe $p
+	    echo "======================= End $p ======================="
+	done
+	exit 1
+    fi
+}
 function get_pvc_and_check() {
     yaml_file=$1
     log_text=$2
@@ -17,15 +55,15 @@ function get_pvc_and_check() {
     while true; do
 	cnt=$((cnt + 1))
 	sleep 1
-	ret=$(kubectl get pods | grep 'Completed' | wc -l)
+	ret=$(kubectl get pods -o wide | grep 'Completed' | wc -l)
 	if [[ $ret -eq ${pod_count} ]]; then
 	    echo "Successful after $cnt seconds"
 	    break
 	fi
 	if [[ $cnt -eq ${time_limit} ]]; then
 	    kubectl get pvc
-	    kubectl get pods -nkadalu
-	    kubectl get pods
+	    kubectl get pods -nkadalu -o wide
+	    kubectl get pods -o wide
 	    echo "exiting after ${time_limit} seconds"
 	    result=1
 	    fail=1
@@ -36,7 +74,7 @@ function get_pvc_and_check() {
 	fi
     done
     kubectl get pvc
-    kubectl get pods
+    kubectl get pods -o wide
 
     #Delete the pods/pvc
     for p in $(kubectl get pods -o name); do
@@ -95,7 +133,7 @@ function install_minikube() {
     fi
 
     echo "Installing minikube. Version: ${MINIKUBE_VERSION}"
-    curl -Lo minikube https://storage.googleapis.com/minikube/releases/"${MINIKUBE_VERSION}"/minikube-linux-amd64 && chmod +x minikube && mv minikube /usr/local/bin/
+    curl -Lo minikube https://storage.googleapis.com/minikube/releases/"${MINIKUBE_VERSION}"/minikube-linux-${ARCH} && chmod +x minikube && mv minikube /usr/local/bin/
 }
 
 function install_kubectl() {
@@ -111,7 +149,7 @@ function install_kubectl() {
     fi
     # Download kubectl, which is a requirement for using minikube.
     echo "Installing kubectl. Version: ${KUBE_VERSION}"
-    curl -Lo kubectl https://storage.googleapis.com/kubernetes-release/release/"${KUBE_VERSION}"/bin/linux/amd64/kubectl && chmod +x kubectl && mv kubectl /usr/local/bin/
+    curl -Lo kubectl https://storage.googleapis.com/kubernetes-release/release/"${KUBE_VERSION}"/bin/linux/${ARCH}/kubectl && chmod +x kubectl && mv kubectl /usr/local/bin/
 }
 
 # configure minikube
@@ -148,13 +186,15 @@ up)
     if [[ "${VM_DRIVER}" != "none" ]]; then
 	wait_for_ssh
 	# shellcheck disable=SC2086
-	minikube ssh "sudo mkdir -p /mnt/${DISK}; sudo truncate -s 4g /mnt/${DISK}/file{1,3.1}; sudo mkdir -p /mnt/${DISK}/{dir3.2,pvc}"
+	minikube ssh "sudo mkdir -p /mnt/${DISK}; sudo truncate -s 4g /mnt/${DISK}/file{1,2.1,2.2,3.1}; sudo mkdir -p /mnt/${DISK}/{dir3.2,pvc}"
     else
 	sudo mkdir -p /mnt/${DISK}
-	sudo truncate -s 4g /mnt/${DISK}/file{1,3.1}
+	sudo truncate -s 4g /mnt/${DISK}/file{1,2.1,2.2,3.1}
 	sudo mkdir -p /mnt/${DISK}/dir3.2
 	sudo mkdir -p /mnt/${DISK}/pvc
     fi
+
+    # Dump Cluster Info
     kubectl cluster-info
     ;;
 down)
@@ -175,50 +215,27 @@ kadalu_operator)
     echo "Starting the kadalu Operator"
 
     # pick the operator file from repo
-    sed -i -e 's/imagePullPolicy: Always/imagePullPolicy: IfNotPresent/g' manifests/kadalu-operator.yaml
-    kubectl create -f manifests/kadalu-operator.yaml
+    sed -i -e 's/imagePullPolicy: Always/imagePullPolicy: IfNotPresent/g' manifests/kadalu-operator-master.yaml
+    kubectl create -f manifests/kadalu-operator-master.yaml
 
+    sleep 1
     # Start storage
-    cp examples/sample-storage-file-device.yaml /tmp/kadalu-storage.yaml
+    output=$(kubectl get nodes -o=name)
+    # output will be in format 'node/hostname'. We need 'hostname'
+    HOSTNAME=$(basename $output)
+    echo "Hostname is ${HOSTNAME}"
+    cp tests/storage-add.yaml /tmp/kadalu-storage.yaml
     sed -i -e "s/DISK/${DISK}/g" /tmp/kadalu-storage.yaml
+    sed -i -e "s/node: minikube/node: ${HOSTNAME}/g" /tmp/kadalu-storage.yaml
+
+    # Prepare PVC also as a storage
     sed -i -e "s/DISK/${DISK}/g" tests/get-minikube-pvc.yaml
     kubectl create -f tests/get-minikube-pvc.yaml
+
     sleep 1
     kubectl create -f /tmp/kadalu-storage.yaml
 
-    # give it some time
-    cnt=0
-    while true; do
-	cnt=$((cnt + 1))
-	sleep 1
-	ret=$(kubectl get pods -nkadalu | grep 'Running' | wc -l)
-	if [[ $ret -ge 7 ]]; then
-	    echo "Successful after $cnt seconds"
-	    break
-	fi
-	if [[ $cnt -eq 100 ]]; then
-	    kubectl get pods
-	    echo "giving up after 100 seconds"
-	    fail=1
-	    break
-	fi
-	if [[ $((cnt % 10)) -eq 0 ]]; then
-	    echo "$cnt: Waiting for pods to come up..."
-	fi
-    done
-    kubectl get pods -nkadalu
-    # Return failure if fail variable is set to 1
-    if [ $fail -eq 1 ]; then
-	echo "Marking the test as 'FAIL'"
-	for p in $(kubectl -n kadalu get pods -o name); do
-	    echo "====================== Start $p ======================"
-	    kubectl -nkadalu --all-containers=true --tail 500 logs $p
-	    kubectl -nkadalu describe $p
-	    echo "======================= End $p ======================="
-	done
-	exit 1
-    fi
-
+    wait_till_pods_start
     ;;
 
 test_kadalu)
@@ -228,14 +245,16 @@ test_kadalu)
 
     get_pvc_and_check examples/sample-test-app3.yaml "Replica3" 2 191
 
-    get_pvc_and_check examples/sample-external-storage.yaml "External (PV)" 1 97
+    #get_pvc_and_check examples/sample-external-storage.yaml "External (PV)" 1 131
 
-    get_pvc_and_check examples/sample-external-kadalu-storage.yaml "External (Kadalu)" 1 97
+    get_pvc_and_check examples/sample-external-kadalu-storage.yaml "External (Kadalu)" 1 131
+
+    get_pvc_and_check examples/sample-test-app2.yaml "Replica2" 2 191
 
     # Log everything so we are sure if things are as expected
     for p in $(kubectl -n kadalu get pods -o name); do
 	echo "====================== Start $p ======================"
-	kubectl -nkadalu --all-containers=true --tail 500 logs $p
+	kubectl -nkadalu --all-containers=true --tail 1000 logs $p
 	echo "======================= End $p ======================="
     done
 
@@ -250,6 +269,16 @@ test_kadalu)
     fi
 
     ;;
+
+cli_tests)
+    output=$(kubectl get nodes -o=name)    
+    # output will be in format 'node/hostname'. We need 'hostname'
+    HOSTNAME=$(basename $output)
+    echo "Hostname is ${HOSTNAME}"
+    bash tests/kubectl_kadalu_tests.sh "$DISK" "${HOSTNAME}"
+    wait_till_pods_start
+    ;;
+
 clean)
     minikube delete
     ;;

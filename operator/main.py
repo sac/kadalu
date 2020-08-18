@@ -7,6 +7,7 @@ import os
 import uuid
 import json
 import logging
+import re
 
 from jinja2 import Template
 from kubernetes import client, config, watch
@@ -16,14 +17,17 @@ from kadalulib import execute, logging_setup, logf, send_analytics_tracker
 
 NAMESPACE = os.environ.get("KADALU_NAMESPACE", "kadalu")
 VERSION = os.environ.get("KADALU_VERSION", "latest")
+K8S_DIST = os.environ.get("K8S_DIST", "kubernetes")
+KUBELET_DIR = os.environ.get("KUBELET_DIR")
 MANIFESTS_DIR = "/kadalu/templates"
 KUBECTL_CMD = "/usr/bin/kubectl"
 KADALU_CONFIG_MAP = "kadalu-info"
 CSI_POD_PREFIX = "csi-"
 STORAGE_CLASS_NAME_PREFIX = "kadalu."
 # TODO: Add ThinArbiter and Disperse
-VALID_HOSTING_VOLUME_TYPES = ["Replica1", "Replica3", "External"]
+VALID_HOSTING_VOLUME_TYPES = ["Replica1", "Replica2", "Replica3", "External"]
 VOLUME_TYPE_REPLICA_1 = "Replica1"
+VOLUME_TYPE_REPLICA_2 = "Replica2"
 VOLUME_TYPE_REPLICA_3 = "Replica3"
 
 
@@ -43,8 +47,10 @@ def bricks_validation(bricks):
     """Validate Brick path and node options"""
     ret = True
     for idx, brick in enumerate(bricks):
+        if not ret:
+            break
+
         if brick.get("pvc", None) is not None:
-            ret = True
             continue
 
         if brick.get("path", None) is None and \
@@ -55,9 +61,6 @@ def bricks_validation(bricks):
         if brick.get("node", None) is None:
             logging.error(logf("Storage node not specified", number=idx+1))
             ret = False
-
-        if not ret:
-            break
 
     return ret
 
@@ -71,6 +74,7 @@ def validate_ext_details(obj):
 
     valid = 0
     if len(clusterdata) > 1:
+        logging.error(logf("Multiple External Cluster details given."))
         return False
 
     for cluster in clusterdata:
@@ -81,14 +85,20 @@ def validate_ext_details(obj):
 
     if valid != 2:
         logging.error(logf("No 'host' and 'volname' details provided."))
-
         return False
 
+    logging.debug(logf("External Storage %s successfully validated" % \
+                       obj["metadata"].get("name", "<unknown>")))
     return True
 
 
+# pylint: disable=too-many-return-statements
 def validate_volume_request(obj):
     """Validate the Volume request for Replica options, number of bricks etc"""
+    if not obj.get("spec", None):
+        logging.error("Storage 'spec' not specified")
+        return False
+
     voltype = obj["spec"].get("type", None)
     if voltype is None:
         logging.error("Storage type not specified")
@@ -113,6 +123,21 @@ def validate_volume_request(obj):
                       " specified")
         return False
 
+    if voltype == VOLUME_TYPE_REPLICA_2:
+        if len(bricks) != 2:
+            logging.error("Invalid number of storage directories/devices"
+                          " specified")
+            return False
+
+        tiebreaker = obj["spec"].get("tiebreaker", None)
+        if tiebreaker and (not tiebreaker.get("node", None) or
+                           not tiebreaker.get("path", None)):
+            logging.error(logf("'tiebreaker' provided for replica2 "
+                               "config is not valid"))
+            return False
+
+    logging.debug(logf("Storage %s successfully validated" % \
+                       obj["metadata"].get("name", "<unknown>")))
     return True
 
 
@@ -130,17 +155,19 @@ def get_brick_device_dir(brick):
     return brick_device_dir
 
 
-def get_brick_hostname(volname, node, idx, suffix=True):
+def get_brick_hostname(volname, idx, suffix=True):
     """Brick hostname is <statefulset-name>-<ordinal>.<service-name>
     statefulset name is the one which is visible when the
     `get pods` command is run, so the format used for that name
-    is "server-<volname>-<idx>-<hostname>". Escape dots from the
+    is "server-<volname>-<idx>". Escape dots from the
     hostname from the input otherwise will become invalid name.
     Service is created with name as Volume name. For example,
-    brick_hostname will be "server-spool1-0-minikube-0.spool1" and
-    server pod name will be "server-spool1-0-minikube"
+    brick_hostname will be "server-spool1-0-0.spool1" and
+    server pod name will be "server-spool1-0"
     """
-    hostname = "server-%s-%d-%s" % (volname, idx, node.replace(".", "-"))
+    tmp_vol = volname.replace("-", "_")
+    dns_friendly_volname = re.sub(r'\W+', '', tmp_vol).replace("_", "-")
+    hostname = "server-%s-%d" % (dns_friendly_volname, idx)
     if suffix:
         return "%s-0.%s" % (hostname, volname)
 
@@ -152,12 +179,13 @@ def update_config_map(core_v1_client, obj):
     Volinfo of new hosting Volume is generated and updated to ConfigMap
     """
     volname = obj["metadata"]["name"]
+    voltype = obj["spec"]["type"]
     data = {
         "namespace": NAMESPACE,
         "kadalu_version": VERSION,
         "volname": volname,
         "volume_id": obj["spec"]["volume_id"],
-        "type": obj["spec"]["type"],
+        "type": voltype,
         "bricks": [],
         "options": obj["spec"].get("options", {})
     }
@@ -167,12 +195,12 @@ def update_config_map(core_v1_client, obj):
         KADALU_CONFIG_MAP, NAMESPACE)
 
     # For each brick, add brick path and node id
-    for idx, storage in enumerate(obj["spec"]["storage"]):
+    bricks = obj["spec"]["storage"]
+    for idx, storage in enumerate(bricks):
         data["bricks"].append({
             "brick_path": "/bricks/%s/data/brick" % volname,
-            "node": get_brick_hostname(volname,
-                                       storage.get("node", "pvc"),
-                                       idx),
+            "kube_hostname": storage.get("node", ""),
+            "node": get_brick_hostname(volname, idx),
             "node_id": storage["node_id"],
             "host_brick_path": storage.get("path", ""),
             "brick_device": storage.get("device", ""),
@@ -180,6 +208,22 @@ def update_config_map(core_v1_client, obj):
             "brick_device_dir": get_brick_device_dir(storage),
             "brick_index": idx
         })
+
+    if voltype == VOLUME_TYPE_REPLICA_2:
+        tiebreaker = obj["spec"].get("tiebreaker", None)
+        if not tiebreaker:
+            logging.warning(logf("No 'tiebreaker' provided for replica2 "
+                                 "config. Using default tie-breaker.kadalu.io:/mnt",
+                                 volname=volname))
+            # Add default tiebreaker if no tie-breaker option provided
+            tiebreaker = {
+                "node": "tie-breaker.kadalu.io",
+                "path": "/mnt",
+            }
+        if not tiebreaker.get("port", None):
+            tiebreaker["port"] = 24007
+
+        data["tiebreaker"] = tiebreaker
 
     volinfo_file = "%s.info" % volname
     configmap_data.data[volinfo_file] = json.dumps(data)
@@ -197,14 +241,21 @@ def deploy_server_pods(obj):
     """
     # Deploy server pod
     volname = obj["metadata"]["name"]
+    voltype = obj["spec"]["type"]
     docker_user = os.environ.get("DOCKER_USER", "kadalu")
+
+    shd_required = False
+    if voltype in (VOLUME_TYPE_REPLICA_3, VOLUME_TYPE_REPLICA_2):
+        shd_required = True
+
     template_args = {
         "namespace": NAMESPACE,
         "kadalu_version": VERSION,
         "docker_user": docker_user,
         "volname": volname,
+        "voltype": voltype,
         "volume_id": obj["spec"]["volume_id"],
-        "shd_required": obj["spec"]["type"] == VOLUME_TYPE_REPLICA_3
+        "shd_required": shd_required
     }
 
     # One StatefulSet per Brick
@@ -214,7 +265,6 @@ def deploy_server_pods(obj):
         # TODO: Understand the need, and usage of suffix
         template_args["serverpod_name"] = get_brick_hostname(
             volname,
-            storage.get("node", "pvc"),
             idx,
             suffix=False
         )
@@ -224,6 +274,7 @@ def deploy_server_pods(obj):
         template_args["pvc_name"] = storage.get("pvc", "")
         template_args["brick_device_dir"] = get_brick_device_dir(storage)
         template_args["brick_node_id"] = storage["node_id"]
+        template_args["k8s_dist"] = K8S_DIST
 
         filename = os.path.join(MANIFESTS_DIR, "server.yaml")
         template(filename, **template_args)
@@ -246,7 +297,7 @@ def handle_external_storage_addition(core_v1_client, obj):
         "kadalu-format": True,
         "gluster_host": details["gluster_host"],
         "gluster_volname": details["gluster_volname"],
-        "gluster_options": details.get("gluster_options", ""),
+        "gluster_options": details.get("gluster_options", "ignore-me"),
     }
 
     # Add new entry in the existing config map
@@ -277,7 +328,6 @@ def handle_added(core_v1_client, obj):
             "validation of volume request failed",
             yaml=obj
         ))
-
         return
 
     # Ignore if already deployed
@@ -405,7 +455,8 @@ def deploy_csi_pods(core_v1_client):
     filename = os.path.join(MANIFESTS_DIR, "csi.yaml")
     docker_user = os.environ.get("DOCKER_USER", "kadalu")
     template(filename, namespace=NAMESPACE, kadalu_version=VERSION,
-             docker_user=docker_user)
+             docker_user=docker_user, k8s_dist=K8S_DIST,
+             kubelet_dir=KUBELET_DIR)
     execute(KUBECTL_CMD, create_cmd, "-f", filename)
     logging.info(logf("Deployed CSI Pods", manifest=filename))
 
@@ -448,22 +499,35 @@ def deploy_storage_class():
 
     api_instance = client.StorageV1Api()
     scs = api_instance.list_storage_class()
-    create_cmd = "create"
-    for item in scs.items:
-        if item.metadata.name.startswith(STORAGE_CLASS_NAME_PREFIX):
-            logging.info("Updating already deployed StorageClass")
-            create_cmd = "apply"
+    sc_names = []
+    for tmpl in os.listdir(MANIFESTS_DIR):
+        if tmpl.startswith("storageclass-"):
+            sc_names.append(
+                tmpl.replace("storageclass-", "").replace(".yaml.j2", "")
+            )
 
-    # Deploy Storage Class
-    filename = os.path.join(MANIFESTS_DIR, "storageclass.yaml")
-    template(filename, namespace=NAMESPACE, kadalu_version=VERSION)
-    execute(KUBECTL_CMD, create_cmd, "-f", filename)
-    logging.info(logf("Deployed StorageClass", manifest=filename))
+    installed_scs = [item.metadata.name for item in scs.items]
+    for sc_name in sc_names:
+        filename = os.path.join(MANIFESTS_DIR, "storageclass-%s.yaml" % sc_name)
+        if sc_name in installed_scs:
+            logging.info(logf("Ignoring already deployed StorageClass",
+                              manifest=filename))
+            continue
+
+        # Deploy Storage Class
+        template(filename, namespace=NAMESPACE, kadalu_version=VERSION)
+        execute(KUBECTL_CMD, "create", "-f", filename)
+        logging.info(logf("Deployed StorageClass", manifest=filename))
 
 
 def main():
     """Main"""
     config.load_incluster_config()
+
+    # As per the issue https://github.com/kubernetes-client/python/issues/254
+    clnt = client.Configuration() #go and get a copy of the default config
+    clnt.verify_ssl = False #set verify_ssl to false in that config
+    client.Configuration.set_default(clnt) #make that config the default for all new clients
 
     core_v1_client = client.CoreV1Api()
     k8s_client = client.ApiClient()

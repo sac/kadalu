@@ -1,0 +1,8 @@
+requests
+kubernetes
+jinja2
+setuptools
+twine
+xxhash
+grpcio
+pyxattr
